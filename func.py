@@ -23,21 +23,23 @@ from datetime import datetime
 
 import oci.object_storage
 
+
+BUCKET_NAME = "bucket-gravimetrico"
+OBJECT_ULT_EJECUCION= "ultEjecucion.json"
+OBJECT_GRAV = "pesados.csv"
+OBJECT_ERP = "erp.json"
+OBJECT_RESULTADO = "resultado.json"
+
+
 def handler(ctx, data: io.BytesIO=None):
     try:
-        body = json.loads(data.getvalue())
-        bucketName = body["bucketName"]
-        objectName = body["objectName"]
-        #dateFrom = body["dateFrom"]
-    except Exception:
-        error = 'Input a JSON object in the format: \'{"bucketName": "<bucket name>"}, "objectName": "<object name>", "dateFrom" : "<date from>"}\' '
+        resp = mergeData()
+    except Exception as e:
+        error = str(e)
+        updateUltEjecucion("ERROR", "Ocurrio un error en la function: " + error)
         raise Exception(error)
-    #resp = readGravimetricoData(bucketName, objectName, dateFrom)
-    resp = pruebaMerge(bucketName, objectName, bucketName, "erp-data.json")
-    #resp = readGravimetricoData(bucketName, objectName, "2023/02/21 13:36:36")
     return response.Response(
         ctx,
-        #response_data=json.dumps(resp),
         response_data = json.dumps(resp),
         headers={"Content-Type": "application/json"}
     )
@@ -60,45 +62,86 @@ def getObject(bucketName, objectName, contentType = None):
     return response
 
 
-def readGravimetricoData(bucketName, objectName, dateFrom):
+def readGravimetricoData(bucketName, objectName, dateFrom, dateTo):
     print("Running readGravimetricoData function")
     try:
         content = getObject(bucketName, objectName)
-        dateFromObject = datetime.strptime(dateFrom, "%Y/%m/%d %H:%M:%S")
+        dateFromObject = datetime.strptime(dateFrom, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=None)
+        dateToObject = datetime.strptime(dateTo, "%Y-%m-%dT%H:%M:%S%z").replace(tzinfo=None)
         lines = content.text.split("\r\n")
         consumos = {}
         for line in lines:
-            [date, item, intake] = line.split(",")
-            dateObject = datetime.strptime(date, "%Y/%m/%d %H:%M:%S")
-            if(dateObject >= dateFromObject):
-                if(item in consumos):
-                    consumos[item] += float(intake)
-                else:
-                    consumos[item] = float(intake)
+            if(line != ''):
+                [date, item, intake] = line.split(",")
+                dateGrav = datetime.strptime(date, "%Y/%m/%d %H:%M:%S")
+                if(dateGrav > dateFromObject and dateGrav <= dateToObject):
+                    if(item in consumos):
+                        consumos[item] += float(intake)
+                    else:
+                        consumos[item] = float(intake)
     except Exception as e:
-        consumos = {"Ocurrio un error" : e.message}
+        raise Exception("Error in fn readGravimetricoData " + str(e))
     return consumos
 
-def pruebaMerge(bucketNameGrav, objectNameGrav, bucketNameErp, objectNameErp):
+def mergeData():
     try:
-        consumosGrav = readGravimetricoData(bucketNameGrav, objectNameGrav, "2023/02/21 13:36:36")
-        consumosErp = getObject(bucketNameErp, objectNameErp, "application/json").json()["consumos"]
+        ultEjecucion = getObject(BUCKET_NAME, OBJECT_ULT_EJECUCION,"application/json").json()
+        consumosGrav = readGravimetricoData(BUCKET_NAME, OBJECT_GRAV, ultEjecucion["dateFrom"], ultEjecucion["dateTo"])
+        erpDatos = getObject(BUCKET_NAME, OBJECT_ERP, "application/json").json()
+        if(erpDatos is None):
+            updateUltEjecucion("ERROR", "No hay datos del ERP")
+            raise Exception("No hay datos del Erp")
+        else:
+            consumosErp = erpDatos["consumos"]
+        if(consumosGrav == {}):
+            updateUltEjecucion("ERROR", "No hay datos del Gravimetrico")
+            raise Exception("No hay datos del Gravimetrico")
+        jsonSalida = {}
         listaResultado = []
+        itemsWithWo = []
+        print("Iterating erp consumption")
         for consumo in consumosErp:
             resultado = {}
-            #TODO: Chequear que pasa si no existe el consumo del erp en el gravimetrico
-            resultado["Item"] = consumo["item"]
-            resultado["ConsumoProporcional"] = (consumosGrav[consumo["item"]] * int(consumo["porcentajeIncidencia"])) / 100
-            resultado["OrdenDeTrabajo"] = consumo["ordenProd"]
-            resultado["Gravimetrico"] = consumosGrav[consumo["item"]]
-            resultado["PorcentajeIncidencia"] = consumo["porcentajeIncidencia"]
-            listaResultado.append(resultado)
-        return listaResultado
-        #response = {"Tipo de dato: " : responseL}
-        #response = readJson(consumosErp)
+            if(str(consumo["itemNumber"]) in consumosGrav.keys()):
+                itemsWithWo.append(str(consumo["itemNumber"]))
+                resultado["itemNumber"] = consumo["itemNumber"]
+                resultado["consumoProporcional"] = (consumosGrav[str(consumo["itemNumber"])] * consumo["pctIncidencia"]) / 100
+                resultado["workOrderNumber"] = consumo["workOrderNumber"]
+                resultado["workOrderId"] = consumo["workOrderId"]
+                resultado["supplySubinventory"] = consumo["supplySubinventory"]
+                resultado["supplyLocatorId"] = consumo["supplyLocatorId"]
+                resultado["inventoryItemId"] = consumo["inventoryItemId"]
+                resultado["gravimetrico"] = consumosGrav[str(consumo["itemNumber"])]
+                resultado["porcentajeIncidencia"] = consumo["pctIncidencia"]
+                resultado["uomCode"] = consumo["uomCode"]
+                resultado["operationSeqNumber"] = consumo["operationSeqNumber"]
+                resultado["organizationCode"] = consumo["organizationCode"]
+                resultado["supplyLocator"] = consumo["supplyLocator"]
+                resultado["dasdad"] = consumo["dasda"]
+                listaResultado.append(resultado)
+            
+        itemsWithoutWo = []
+        for itemGrav in consumosGrav.keys():
+            if str(itemGrav) not in itemsWithWo:
+                item = {}
+                item["itemNumber"] = itemGrav
+                itemsWithoutWo.append(item)
+        jsonSalida["consumos"] = listaResultado
+        jsonSalida["itemsSinWorkOrder"] = itemsWithoutWo
+        response = writeObject(BUCKET_NAME, OBJECT_RESULTADO, jsonSalida)
+        updateUltEjecucion("PENDING_TRANSACTIONS", "")
     except Exception as e:
-        response = {"Ocurrio un error" : "da"}
+        raise Exception("Ocurrio un error "  + str(e))
     return response
+
+def updateUltEjecucion(status, errorMessage):
+    try:
+        ultEjecucion = getObject(BUCKET_NAME, OBJECT_ULT_EJECUCION, "application/json").json()
+        ultEjecucion["status"] = status
+        ultEjecucion["error"] = errorMessage
+        writeObject(BUCKET_NAME, OBJECT_ULT_EJECUCION, ultEjecucion)
+    except Exception as e:
+        raise Exception("updateUltEjecucion - Ocurrio un error " + str(e))
 
 
 def writeObject(bucketName, objectName, content):
@@ -110,7 +153,7 @@ def writeObject(bucketName, objectName, content):
         object = client.put_object(namespace, bucketName, objectName, json.dumps(content))
         output = "Success: Put object '" + objectName + "' in bucket '" + bucketName + "'"
     except Exception as e:
-        output = "Failed: " + str(e.message)
+        raise Exception("WriteObject fn " + str(e.message))
     return { "state": output }
 
     
