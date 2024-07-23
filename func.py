@@ -35,9 +35,8 @@ def handler(ctx, data: io.BytesIO=None):
     try:
         resp = mergeData()
     except Exception as e:
-        error = str(e)
-        updateUltEjecucion("ERROR", "Ocurrio un error en la function: " + error)
-        raise Exception(error)
+        updateUltEjecucion("ERROR", "Ocurrio un error en la function: " + str(e))
+        raise Exception(str(e))
     return response.Response(
         ctx,
         response_data = json.dumps(resp),
@@ -58,7 +57,7 @@ def getObject(bucketName, objectName, contentType = None):
         else:
             raise Exception("Failed: The object " + objectName + " could not be retrieved. Status != 200")
     except Exception as e:
-        raise Exception("Ocurrio un error al llamar a la API")
+        raise Exception("GET_OBJECT_ERROR - " + str(e))
     return response
 
 
@@ -80,7 +79,7 @@ def readGravimetricoData(bucketName, objectName, dateFrom, dateTo):
                     else:
                         consumos[item] = float(intake)
     except Exception as e:
-        raise Exception("Error in fn readGravimetricoData " + str(e))
+        raise Exception("READ_GRAVIMETRICO_DATA_ERROR - " + str(e))
     return consumos
 
 def mergeData():
@@ -99,39 +98,49 @@ def mergeData():
         jsonSalida = {}
         listaResultado = []
         itemsWithWo = []
+        badConfigItems = []
         print("Iterating erp consumption")
         for consumo in consumosErp:
             resultado = {}
             if(str(consumo["itemNumber"]) in consumosGrav.keys()):
                 itemsWithWo.append(str(consumo["itemNumber"]))
-                resultado["itemNumber"] = consumo["itemNumber"]
-                resultado["consumoProporcional"] = (consumosGrav[str(consumo["itemNumber"])] * consumo["pctIncidencia"]) / 100
-                resultado["workOrderNumber"] = consumo["workOrderNumber"]
-                resultado["workOrderId"] = consumo["workOrderId"]
-                resultado["supplySubinventory"] = consumo["supplySubinventory"]
-                resultado["supplyLocatorId"] = consumo["supplyLocatorId"]
-                resultado["inventoryItemId"] = consumo["inventoryItemId"]
-                resultado["gravimetrico"] = consumosGrav[str(consumo["itemNumber"])]
-                resultado["porcentajeIncidencia"] = consumo["pctIncidencia"]
-                resultado["uomCode"] = consumo["uomCode"]
-                resultado["operationSeqNumber"] = consumo["operationSeqNumber"]
-                resultado["organizationCode"] = consumo["organizationCode"]
-                resultado["supplyLocator"] = consumo["supplyLocator"]
-                resultado["dasdad"] = consumo["dasda"]
-                listaResultado.append(resultado)
-            
+                if(consumo["uomCode"] == 'KG'):
+                    resultado["itemNumber"] = consumo["itemNumber"]
+                    resultado["consumoProporcional"] = ((consumosGrav[str(consumo["itemNumber"])] * consumo["pctIncidencia"]) / 100)
+                    resultado["workOrderNumber"] = consumo["workOrderNumber"]
+                    resultado["workOrderId"] = consumo["workOrderId"]
+                    resultado["supplySubinventory"] = consumo["supplySubinventory"]
+                    resultado["supplyLocatorId"] = consumo["supplyLocatorId"]
+                    resultado["inventoryItemId"] = consumo["inventoryItemId"]
+                    resultado["gravimetrico"] = consumosGrav[str(consumo["itemNumber"])]
+                    resultado["porcentajeIncidencia"] = consumo["pctIncidencia"]
+                    resultado["uomCode"] = consumo["uomCode"]
+                    resultado["operationSeqNumber"] = consumo["operationSeqNumber"]
+                    resultado["organizationCode"] = consumo["organizationCode"]
+                    resultado["supplyLocator"] = consumo["supplyLocator"]
+                    listaResultado.append(resultado)
+                else:
+                    item = {}
+                    item["itemNumber"] = consumo["itemNumber"]
+                    item["uomCode"] = consumo["uomCode"]
+                    item["gravimetrico"] = consumosGrav[str(consumo["itemNumber"])]
+                    if(item not in badConfigItems):
+                        badConfigItems.append(item)
+                    
         itemsWithoutWo = []
         for itemGrav in consumosGrav.keys():
             if str(itemGrav) not in itemsWithWo:
                 item = {}
                 item["itemNumber"] = itemGrav
+                item["gravimetrico"] = consumosGrav[str(itemGrav)]
                 itemsWithoutWo.append(item)
         jsonSalida["consumos"] = listaResultado
         jsonSalida["itemsSinWorkOrder"] = itemsWithoutWo
+        jsonSalida["itemsMalConfiguradoros"] = badConfigItems
         response = writeObject(BUCKET_NAME, OBJECT_RESULTADO, jsonSalida)
         updateUltEjecucion("PENDING_TRANSACTIONS", "")
     except Exception as e:
-        raise Exception("Ocurrio un error "  + str(e))
+        raise Exception("MERGE_DATA_ERROR - "  + str(e))
     return response
 
 def updateUltEjecucion(status, errorMessage):
@@ -141,7 +150,7 @@ def updateUltEjecucion(status, errorMessage):
         ultEjecucion["error"] = errorMessage
         writeObject(BUCKET_NAME, OBJECT_ULT_EJECUCION, ultEjecucion)
     except Exception as e:
-        raise Exception("updateUltEjecucion - Ocurrio un error " + str(e))
+        raise Exception("UPDATE_ULT_EJECUCION_ERROR - " + str(e))
 
 
 def writeObject(bucketName, objectName, content):
@@ -153,7 +162,7 @@ def writeObject(bucketName, objectName, content):
         object = client.put_object(namespace, bucketName, objectName, json.dumps(content))
         output = "Success: Put object '" + objectName + "' in bucket '" + bucketName + "'"
     except Exception as e:
-        raise Exception("WriteObject fn " + str(e.message))
+        raise Exception("WriteObject fn " + str(e))
     return { "state": output }
 
     
