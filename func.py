@@ -18,6 +18,7 @@ import os
 import json
 import sys
 import csv
+import requests
 from fdk import response
 from datetime import datetime
 
@@ -29,6 +30,7 @@ OBJECT_ULT_EJECUCION= "ultEjecucion.json"
 OBJECT_GRAV = "pesados.csv"
 OBJECT_ERP = "erp.json"
 OBJECT_RESULTADO = "resultado.json"
+MANEJADOR_EXCEPCIONES_URL = 'http://129.213.178.233:83/createDocument'
 
 
 def handler(ctx, data: io.BytesIO=None):
@@ -121,11 +123,12 @@ def mergeData():
                     listaResultado.append(resultado)
                 else:
                     item = {}
-                    item["itemNumber"] = consumo["itemNumber"]
+                    item["itemNumber"] = str(consumo["itemNumber"])
                     item["uomCode"] = consumo["uomCode"]
                     item["gravimetrico"] = consumosGrav[str(consumo["itemNumber"])]
                     if(item not in badConfigItems):
                         badConfigItems.append(item)
+                        postArticuloBadConfig(item["itemNumber"], item["gravimetrico"])
                     
         itemsWithoutWo = []
         for itemGrav in consumosGrav.keys():
@@ -134,6 +137,7 @@ def mergeData():
                 item["itemNumber"] = itemGrav
                 item["gravimetrico"] = consumosGrav[str(itemGrav)]
                 itemsWithoutWo.append(item)
+                postArticuloWithoutWo(item["itemNumber"], item["gravimetrico"])
         jsonSalida["consumos"] = listaResultado
         jsonSalida["itemsSinWorkOrder"] = itemsWithoutWo
         jsonSalida["itemsMalConfiguradoros"] = badConfigItems
@@ -165,4 +169,47 @@ def writeObject(bucketName, objectName, content):
         raise Exception("WriteObject fn " + str(e))
     return { "state": output }
 
-    
+def postArticuloWithoutWo(articulo, consumo):
+    time = datetime.now()
+    payload = {
+                "mfg_report_gravimetrico" : {
+                'modulo' : 'MFG',
+                'organizacion' : 'DARNEL_URUGUAY',
+                "id_proceso" : "report_gravimetrico",
+                "tipo" : "I",
+                "transaction_id" : time.strftime("%Y%m%d%H%M%S%f"),
+                "estado" : "articulo_no_encontrado_orden_prod",
+                "descr" : "Articulo no encontrado en ninguna orden de producción entre las fechas examinadas" ,
+                "origen" : "OCI_FUNCTION",
+                "observacion" : "El articulo no se encuentra en ninguna orden de producción",
+                "error_path" : ["data/ARTICULO"],
+                },
+                "data" : {
+                    "ARTICULO" : articulo,
+                    "CONSUMO_GRAVIMETRICO" : consumo
+                }
+                }
+    x = requests.post(MANEJADOR_EXCEPCIONES_URL, json=payload)
+
+def postArticuloBadConfig(articulo, consumo):
+    time = datetime.now()
+    payload = {
+                "mfg_report_gravimetrico" : {
+                'modulo' : 'MFG',
+                'organizacion' : 'DARNEL_URUGUAY',
+                "id_proceso" : "report_gravimetrico",
+                "tipo" : "I",
+                "transaction_id" : time.strftime("%Y%m%d%H%M%S%f"),
+                "estado" : "fallo_configuracion_articulo",
+                "descr" : "Articulo mal configurado" ,
+                "origen" : "OCI_FUNCTION",
+                "observacion" : "El articulo tiene una unidad de medida incorrecta, debe ser KG",
+                "error_path" : ["data/ARTICULO"],
+                },
+                "data" : {
+                    "ARTICULO" : articulo,
+                    "CONSUMO_GRAVIMETRICO" : consumo
+                }
+                }
+    x = requests.post(MANEJADOR_EXCEPCIONES_URL, json=payload)
+
