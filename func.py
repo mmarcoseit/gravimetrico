@@ -25,7 +25,7 @@ from datetime import datetime
 import oci.object_storage
 
 
-BUCKET_NAME = "bucket-gravimetrico"
+BUCKET_NAME = "bckt-mftg-gravimetrico-uy-input-tst"
 OBJECT_ULT_EJECUCION= "ultEjecucion.json"
 OBJECT_GRAV = "pesados.csv"
 OBJECT_ERP = "erp.json"
